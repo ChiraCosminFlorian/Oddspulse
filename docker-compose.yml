@@ -1,0 +1,73 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: oddspulse
+      POSTGRES_USER: odds_user
+      POSTGRES_PASSWORD: odds_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odds_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  localstack:
+    image: localstack/localstack:latest
+    environment:
+      SERVICES: sqs,s3
+      DEFAULT_REGION: eu-west-1
+    ports:
+      - "4566:4566"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4566/_localstack/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  init-aws:
+    image: amazon/aws-cli
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: eu-west-1
+    entrypoint: /bin/sh
+    command: >
+      -c "
+        aws --endpoint-url=http://localstack:4566 sqs create-queue
+          --queue-name odds-feed-queue --region eu-west-1 &&
+        aws --endpoint-url=http://localstack:4566 s3 mb
+          s3://oddspulse-snapshots --region eu-west-1
+      "
+
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/oddspulse
+      DB_USERNAME: odds_user
+      DB_PASSWORD: odds_pass
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/odds-feed-queue
+      S3_BUCKET_NAME: oddspulse-snapshots
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: eu-west-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      init-aws:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:
